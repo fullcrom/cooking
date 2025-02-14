@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>HAPPY VALENTINE'S DAY</title>
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <div class="wrapper">
+        <!-- Column 1 -->
+        <div class="column1">
+            <div class="container">
+                <div class="envelope-wrapper">
+                    <div class="envelope">
+                        <div class="letter">
+                            <div class="text">
+                                <strong>Dearest Mia,</strong>
+                                <p> 
+                                    Sorry bae na busy sa exam. I really appreciate all the efforts na binibigay mo for our ldr relationship to work, 
+                                    sobrang thankful because you love me the way that you do. Thank you for all the support that you have given me through all my exams bae. 
+                                    I can’t wait umuwi ka I love you so muchhhhhhhh ❤️❤️❤️❤️❤️❤️❤️❤️❤️❤️❤️❤️
+                                </p>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="heart"></div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Column 2 -->
+        <div class="column2">
+            <div class="separator-box">
+                <div class="audio-container" id="yt-container">
+                    <iframe id="yt-player" width="0" height="0" frameborder="0" allow="autoplay"></iframe>
+                </div>
+                <H2>Will you be my valentine? </H2>
+                <img src="https://media.tenor.com/LRDMe1QpqFYAAAAC/cat-cute.gif" alt="GIF">
+                <button class="playAudio" id="playAudio" onclick="playAudio()">Play Audio</button>
+                <a href="macedoflp-valentine-64d3757/index.html">
+                <button class="yesBTN" id="yesBTN" onclick="yesButton()">Yes</button></a>
+                <button class="noBTN" id="noBTN">No</button>
+            </div>
+        </div>
+    </div>
+
+    <script type="text/javascript">
+        // Envelope opening animation
+        const envelope = document.querySelector('.envelope-wrapper');
+        envelope.addEventListener('click', () => {
+            envelope.classList.toggle('flap');
+        });
+        // YouTube Audio Control
+        let player = document.getElementById("yt-player");
+
+        playAudio = () => {
+            player.src = "https://www.youtube.com/embed/4adZ7AguVcw?autoplay=1"; // Fixed URL
+        }
+        yesButton = () => {
+            alert("Yeyyyy! Thank you my love mwa mwa!");
+            window.location.reload();
+        }
+        const moveRandomEl = (e) => {
+            e.style.position = "absolute";
+            e.style.top = Math.floor(Math.random() * 90 + 5) + "%";
+            e.style.left = Math.floor(Math.random() * 90 + 5) + "%";
+        }
+        const moveRandomBTN = document.getElementById("noBTN").addEventListener("mouseenter", (e) => {
+            moveRandomEl(e.target);
+        });
+    </script>
+</body>
+</html>
