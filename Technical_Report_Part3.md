@@ -2,207 +2,214 @@
 
 ## 3. CONCURRENCY CONTROL AND CONSISTENCY
 
-As multiple users perform read and write operations in the application at the same time, the issue of data consistency across users becomes critical. To maintain data integrity, concurrency control methods are implemented, such as transaction management, lock mechanisms, and usage of isolation levels. For each read or write operation, a transaction is first started and locks are acquired on the specific record to avoid overlapping modifications. Once locked, the operation is executed, followed by ending the transaction using COMMIT and releasing the locks. For error handling during execution, a ROLLBACK command is used to maintain clean data by undoing all changes done by the current transaction.
+When many users access the banking system at the same time, the system must protect data from becoming inconsistent. This report describes how the distributed database handles multiple operations happening simultaneously while keeping all data correct and synchronized.
 
-In the case of heavy load on the web application, relying on a single node can lead to slower operations and reduced performance. To improve reliability during traffic surges, a master-slave architecture with fragmentation is adopted. In this distributed database system, three nodes are utilized:
+The system uses three main techniques to control concurrent access:
+1. **Transactions** - Group related operations together so they complete as a unit
+2. **Locks** - Prevent two users from modifying the same record at once
+3. **Isolation Levels** - Control what data users can see during operations
 
-- **Node 0 (Master Node)**: Contains the complete dataset and handles both read and write operations
-- **Node 1 (Fragment A)**: Contains records where date is before 1997-01-01 and handles read operations
-- **Node 2 (Fragment B)**: Contains records where date is 1997-01-01 or later and handles read operations
+When a user wants to read or update data, the system starts a transaction, locks the needed records, performs the operation, and then commits the changes. If something goes wrong, the system rolls back to undo any partial changes.
 
-This setup provides several benefits. First, the fragments store subsets based on date partitioning, which makes queries faster. Second, the master node keeps a complete copy for recovery purposes. Third, read operations can be distributed across fragments to reduce load. Fourth, the master node acts as the single source of truth for handling conflicts.
+### System Architecture
 
-This setup provides several benefits. First, the fragments store subsets based on date partitioning, which makes queries faster. Second, the master node keeps a complete copy for recovery purposes. Third, read operations can be distributed across fragments to reduce load. Fourth, the master node acts as the single source of truth for handling conflicts.
+The banking application uses three database nodes to spread the workload:
+
+- **Node 0 (Master)**: Stores all transaction records and accepts reads and writes
+- **Node 1 (Slave Fragment A)**: Stores only transactions before January 1, 1997 for reading
+- **Node 2 (Slave Fragment B)**: Stores only transactions from January 1, 1997 onward for reading
+
+This architecture splits the data by date. Old historical transactions go to Node 1, while recent transactions go to Node 2. The master node keeps everything. This division helps in several ways. Queries run faster when searching smaller datasets. Multiple nodes can handle read requests at the same time. If one fragment fails, the master still has all the data. Write operations always go through the master to prevent conflicts.
 
 ### Update and Replication Strategy
 
-In the master-slave setup, the master node (Node 0) can execute both read and write operations (create, read, update, and delete). The slave nodes (Node 1 and Node 2) handle read operations. During write transactions, data is first written to the master node, then replicated to the appropriate slave node based on the record's date.
+Write operations work differently than reads in this architecture. The master node accepts all types of operations including inserts, updates, and deletes. The slave nodes only accept read requests. When someone updates data, the system writes to the master first and then copies the change to the appropriate fragment.
 
-The replication process works as follows:
+Here is how replication happens:
 
-**Step 1: Determine Record Date**
-When a write operation occurs, the system first checks the date of the record being modified. This date determines which fragment node should receive the update.
+**First, find which fragment needs the update**
+The system looks at the transaction date in the record. Dates before 1997 belong to Node 1. Dates from 1997 forward belong to Node 2.
 
-**Step 2: Route to Target Node**
-- If the master node receives the write and the record date is before 1997-01-01, the update is sent to Node 1
-- If the record date is 1997-01-01 or later, the update is sent to Node 2
-- If a fragment node receives the write, the update is always sent back to the master node (Node 0)
+**Second, send the update to the right place**
+- When the master receives an update for an old transaction, it sends a copy to Node 1
+- When the master receives an update for a recent transaction, it sends a copy to Node 2  
+- When a fragment receives an update (during maintenance), it sends a copy back to the master
 
-**Step 3: Execute Replication**
-For each target node, the system attempts to execute the same query. If the target node is offline or the replication fails, the system adds the operation to a replication queue for later retry. This approach is called eager replication because updates are sent immediately, not delayed.
+**Third, handle problems if they occur**
+If a node is down or busy, the update gets added to a waiting list. The system tries the update immediately instead of delaying it, which is why this is called eager replication.
 
-**Step 4: Handle Failures**
-When a failed node comes back online, the system checks the replication queue and replays all pending operations to bring the node up to date.
+**Finally, recover from failures**
+When a node comes back online after being down, the system checks the waiting list and runs all the missed updates.
 
-This bidirectional approach means that updates can start from either the master or the fragments, and the system will propagate changes to keep all nodes synchronized.
+This two-way replication means updates can start from any node and get copied to keep everything synchronized.
 
 ### Isolation Level Selection
 
-The application uses **READ_COMMITTED** as the isolation level for transactions. This choice balances performance and data consistency.
+The application uses **READ_COMMITTED** for all transactions. This setting controls what data users can see when other operations are running.
 
-**Why READ_COMMITTED?**
+**Why choose READ_COMMITTED?**
 
-The four isolation levels offer different trade-offs:
+Database systems offer four isolation levels, each with different trade-offs:
 
-1. **READ_UNCOMMITTED**: Fastest but allows dirty reads (reading data that is not yet saved). This is not suitable for banking applications because users could see incorrect balances.
+1. **READ_UNCOMMITTED**: Runs fastest but lets users see data before it is saved. For a banking system, this is dangerous because someone might see a balance that gets canceled later.
 
-2. **READ_COMMITTED**: Good speed and prevents dirty reads. Users only see data that has been saved. This is suitable for most banking operations where each transaction is independent.
+2. **READ_COMMITTED**: Runs fast and only shows data after it is saved. Users never see temporary or canceled changes. This works well for banking where each transaction stands alone.
 
-3. **REPEATABLE_READ**: Slower because it keeps locks longer. Prevents other transactions from changing data you have read. This is good for reports but adds too much overhead for simple transactions.
+3. **REPEATABLE_READ**: Runs slower because it holds locks longer. Useful for reports that need stable data, but adds too much waiting time for simple transactions.
 
-4. **SERIALIZABLE**: Slowest because it forces transactions to run one after another. Only needed for very complex operations.
+4. **SERIALIZABLE**: Runs slowest because it makes operations happen one at a time. Only needed for very complex operations that depend on each other.
 
-Based on testing with 1000 concurrent transactions:
+Testing with 1000 operations running at once showed these results:
 
-| Isolation Level | Speed (Transactions/Second) | Dirty Reads | Lock Conflicts |
-|----------------|----------------------------|-------------|----------------|
+| Isolation Level | Speed (ops/second) | Bad Reads | Lock Waits |
+|----------------|-------------------|-----------|-----------|
 | READ_UNCOMMITTED | 830 | 47 | 0 |
 | READ_COMMITTED | 667 | 0 | 23 |
 | REPEATABLE_READ | 357 | 0 | 156 |
 | SERIALIZABLE | 222 | 0 | 298 |
 
-READ_COMMITTED provides good performance (667 transactions per second) while preventing dirty reads completely. It is only 20% slower than READ_UNCOMMITTED but provides the consistency guarantees needed for financial data.
+READ_COMMITTED handles 667 operations per second with zero bad reads. It is only 20% slower than READ_UNCOMMITTED but provides the data protection needed for financial records.
 
 ### Data Transparency
 
-The system provides transparency in three ways:
+The system hides complexity from the application in three ways:
 
-1. **Location Transparency**: The application does not need to know where data is physically stored. It uses logical names (node0, node1, node2) instead of actual server addresses.
+1. **Location Transparency**: The application uses simple names like node0, node1, node2 instead of actual server addresses and ports.
 
-2. **Replication Transparency**: The application does not need to manage replication. When a write occurs, replication happens automatically in the background.
+2. **Replication Transparency**: When the application saves data, replication happens automatically in the background without extra code.
 
-3. **Failure Transparency**: When a node fails, the application continues to work. Failed replications are queued and automatically retried when the node recovers.
+3. **Failure Transparency**: If a node goes down, the application keeps working. Failed replications wait in a queue and retry automatically when the node recovers.
 
 ## Methodology
 
 ### Test Setup
 
-The testing environment consists of three MySQL database servers running on different ports:
-- Node 0 (Master): Port 60709 - Contains all records
-- Node 1 (Fragment A): Port 60710 - Contains records before 1997
-- Node 2 (Fragment B): Port 60711 - Contains records from 1997 onwards
+The test environment uses three MySQL database servers:
+- Node 0 (Master): Port 60709, stores all transactions
+- Node 1 (Fragment A): Port 60710, stores transactions before 1997
+- Node 2 (Fragment B): Port 60711, stores transactions from 1997 onward
 
-The backend server is built with Node.js and Express, running on port 5000. It manages connections to all three database nodes using connection pools (10 connections per node). The frontend is a React application running on port 5173.
+The backend server runs Node.js with Express on port 5000. It connects to all three databases using connection pools (10 connections per database). The frontend is a React application on port 5173.
 
-The concurrency control system uses a custom lock manager that tracks which transactions are reading or writing each record. This lock manager implements the isolation level rules without relying on database-specific features.
+The concurrency control system uses a custom lock manager to track which operations are reading or writing each record. This lock manager works independently of the database to control isolation levels.
 
-### How Concurrency Control is Simulated
+### How Testing Was Done
 
-Three test cases were designed to verify that the concurrency control system works correctly:
+Three tests check if the concurrency control system works correctly:
 
-**Test Case 1: Concurrent Reads**
-- Two users read the same record at the same time
-- Expected result: Both reads succeed and return the same data
-- Purpose: Verify that multiple readers can access data without blocking each other
+**Test 1: Two Reads at Once**
+- Two users read the same transaction record at the same time
+- Expected: Both reads work and show the same data
+- Purpose: Check that multiple readers do not block each other
 
-**Test Case 2: Write with Concurrent Reads**
-- One user updates a record while two other users try to read it
-- Expected result: Readers wait for the write to complete, then see the updated value
-- Purpose: Verify that dirty reads are prevented (readers do not see half-finished updates)
+**Test 2: Write While Others Read**
+- One user updates a record, two others try to read it at the same time
+- Expected: Readers wait for the update to finish, then see the new value
+- Purpose: Check that readers do not see incomplete updates
 
-**Test Case 3: Concurrent Writes**
+**Test 3: Two Writes at Once**  
 - Two users try to update the same record at the same time
-- Expected result: One write completes first, the second write waits and then completes
-- Purpose: Verify that updates are not lost when multiple users modify the same data
+- Expected: One update finishes first, then the second one runs
+- Purpose: Check that updates do not overwrite each other
 
-Each test case was run with all four isolation levels to compare their behavior.
+Each test ran with all four isolation levels to compare behavior.
 
 ### Test Results
 
-Table 1 shows the results of testing concurrent operations:
+Table 1 shows what happened when operations ran at the same time:
 
-**Table 1. Concurrency Test Results**
+**Table 1. Results from Concurrent Operation Tests**
 
-| Case | Transaction 1 | Transaction 2 | Result | Consistency Check |
-|------|--------------|---------------|--------|-------------------|
-| 1 | READ record 123 | READ record 123 | PASS | Both readers got value 100 |
-| 2 | UPDATE record 123 to 200 | READ record 123 | PASS | Readers got 200 (not 100) |
-| 3 | UPDATE record 123 to 300 | UPDATE record 123 to 400 | PASS | Final value is 400, all nodes match |
+| Test | Operation 1 | Operation 2 | Outcome | Data Check |
+|------|------------|-------------|---------|-----------|
+| 1 | READ record 123 | READ record 123 | PASS | Both got value 100 |
+| 2 | UPDATE record 123 to 200 | READ record 123 | PASS | Readers got 200 (not old value) |
+| 3 | UPDATE record 123 to 300 | UPDATE record 123 to 400 | PASS | Final value 400, all nodes match |
 
-All tests were run multiple times (at least 3 iterations per isolation level) to verify consistent behavior.
+All tests ran at least 3 times with each isolation level to confirm consistent behavior.
 
-**Detailed Results for Test Case 2 (Write + Reads):**
+**Details for Test 2 (Update + Reads):**
 
-When using READ_UNCOMMITTED:
-- Writer started updating amount from 100 to 200
-- Reader A read amount = 105 (dirty read - saw partial update)
-- Reader B read amount = 106 (dirty read - saw partial update)
-- Result: FAIL - Dirty reads occurred
+With READ_UNCOMMITTED:
+- Writer started changing amount from 100 to 200
+- Reader A got amount = 105 (saw partial update)
+- Reader B got amount = 106 (saw partial update)  
+- Result: FAIL because readers saw incomplete data
 
-When using READ_COMMITTED:
-- Writer started updating amount from 100 to 200
+With READ_COMMITTED:
+- Writer started changing amount from 100 to 200
 - Reader A waited for writer to finish
 - Reader B waited for writer to finish
-- Both readers read amount = 200 (clean read - saw committed value)
-- Result: PASS - No dirty reads
+- Both readers got amount = 200 (saw completed update)
+- Result: PASS because readers only saw final data
 
-When using REPEATABLE_READ and SERIALIZABLE:
-- Similar to READ_COMMITTED but with longer lock durations
-- Result: PASS - No dirty reads, but slower performance
+With REPEATABLE_READ and SERIALIZABLE:
+- Similar to READ_COMMITTED but slower
+- Result: PASS but took more time
 
-**Replication Consistency Results:**
+**Replication Results:**
 
-After 100 test runs with various operations, the replication system showed:
-- 0 cases of data divergence (all nodes had matching data)
-- 0 cases of lost updates
-- 100% success rate for replication after node recovery
-- Average replication time: 45 milliseconds
+After 100 test runs with various operations:
+- 0 cases where nodes had different data
+- 0 cases where updates got lost
+- 100% success getting nodes back in sync after recovery
+- Average time to copy data: 45 milliseconds
 
-Table 2 shows data consistency across nodes after concurrent writes:
+Table 2 shows data consistency across nodes after updates:
 
-**Table 2. Node Consistency After Concurrent Operations**
+**Table 2. Node Data After Concurrent Updates**
 
-| Test Scenario | Node 0 Value | Node 1 Value | Node 2 Value | Consistent? |
-|--------------|--------------|--------------|--------------|-------------|
-| Update record before 1997 | 150 | 150 | N/A | YES |
-| Update record after 1997 | 250 | N/A | 250 | YES |
-| Two simultaneous updates | 300 | 300 | N/A | YES |
-| Node failure and recovery | 400 | 400 (replayed) | 400 | YES |
+| Test Scenario | Node 0 | Node 1 | Node 2 | All Match? |
+|--------------|--------|--------|--------|-----------|
+| Update old record | 150 | 150 | N/A | YES |
+| Update recent record | 250 | N/A | 250 | YES |
+| Two updates at once | 300 | 300 | N/A | YES |
+| Node down and recovered | 400 | 400 (replayed) | 400 | YES |
 
 ### Validation Methods
 
-To verify that the system maintains consistency, three types of checks were performed:
+Three types of checks verified that the system maintains consistency:
 
-1. **Data Consistency Check**: After each test, all nodes were queried to compare values. If all nodes returned the same data for the same record, the test passed.
+1. **Data Consistency Check**: After each test, all nodes were queried to compare values. If all nodes showed the same data for a record, the test passed.
 
-2. **Lock Behavior Check**: The lock manager was monitored during tests to verify that locks were acquired and released according to isolation level rules.
+2. **Lock Behavior Check**: The lock manager was monitored during tests to verify locks were acquired and released according to isolation level rules.
 
-3. **Replication Queue Check**: The replication queue was inspected to verify that failed replications were stored and successfully replayed after node recovery.
+3. **Replication Queue Check**: The replication queue was inspected to verify failed replications were stored and successfully replayed after node recovery.
 
 ## Discussion
 
 ### Key Findings
 
-The test results show that READ_COMMITTED is the best choice for this banking application. It prevents dirty reads (users never see unsaved data) while maintaining good performance. The 20% speed reduction compared to READ_UNCOMMITTED is acceptable given that consistency is critical for financial data.
+Testing shows that READ_COMMITTED is the right choice for this banking application. It prevents users from seeing incomplete data while maintaining good speed. The 20% slower performance compared to READ_UNCOMMITTED is acceptable because data accuracy is critical for financial transactions.
 
-The master-slave architecture with fragmentation works well for this application. By splitting records based on date, each fragment handles about half the data, which reduces the load on any single node. The bidirectional replication means that updates can occur on fragments (for example, during maintenance on the master), and the system will still stay synchronized.
+The master-slave design with date-based splitting works well. By dividing records at the 1997 boundary, each fragment handles roughly half the data. This reduces the work on any single database. The two-way replication means updates can happen on fragments during maintenance, and everything stays synchronized.
 
-The custom lock manager successfully prevents two common problems: dirty reads (reading unsaved data) and lost updates (one update overwriting another). During 100 test runs, there were zero cases of either problem.
+The custom lock manager successfully stops two major problems: seeing incomplete data and losing updates. During 100 test runs, both problems never occurred.
 
 ### Comparison with Research
 
-These results align with established database research:
+These results match findings in database research:
 
-**Gray and Reuter (1993)** described transaction processing and showed that two-phase locking (acquiring locks before operating, releasing after commit) prevents lost updates. The test results confirm this - zero lost updates across all tests.
+**Gray and Reuter (1993)** wrote about transaction processing and showed that locking records before updating them prevents lost updates. The test results confirm this with zero lost updates.
 
-**Berenson et al. (1995)** analyzed SQL isolation levels and showed that READ_COMMITTED prevents dirty reads but allows non-repeatable reads. The test results match this exactly - no dirty reads occurred, but the same query could return different values if run twice during another transaction.
+**Berenson et al. (1995)** analyzed SQL isolation levels and found that READ_COMMITTED stops incomplete reads but allows data to change between queries. The test results match this exactly. No incomplete reads occurred, but running the same query twice could give different answers if another update happened in between.
 
-**Kemme and Alonso (2000)** studied database replication and found that eager replication (immediate propagation) provides strong consistency but adds latency. The results show 100% consistency across nodes with an average 45ms replication time, confirming this trade-off.
+**Kemme and Alonso (2000)** studied database replication and found that immediate copying provides strong consistency but adds delay. The results show 100% consistency across nodes with 45ms average copy time, confirming this trade-off.
 
-The hybrid master-slave architecture follows the "primary copy" pattern described in replication research. Having one master node as the source of truth simplifies conflict resolution while still allowing read load to be distributed.
+The master-slave design follows the "primary copy" pattern from replication research. Having one master as the source of truth makes conflict resolution simpler while still allowing read work to be distributed.
 
 ### Limitations
 
-The current implementation has some limitations:
+The current system has some limitations:
 
-1. The lock manager stores data in memory, so locks are lost if the server restarts
-2. The 1997 date boundary for fragmentation is fixed and cannot be changed easily
-3. If the master node fails, write operations cannot proceed until it recovers
-4. Very long transactions (over 5 seconds) will timeout and need to be retried
+1. The lock manager stores information in memory, so locks disappear if the server restarts
+2. The 1997 date split is hardcoded and cannot be changed easily
+3. If the master node fails, no write operations can happen until it recovers
+4. Operations taking over 5 seconds will timeout and need to restart
 
 ### Conclusion
 
-The implemented concurrency control and replication system successfully maintains data consistency across three distributed nodes. READ_COMMITTED isolation level provides the right balance of performance and consistency for banking transactions. The master-slave architecture with date-based fragmentation allows the system to handle high read loads while keeping all nodes synchronized. Test results show zero data divergence and zero lost updates across 100 test iterations, confirming that the system works as designed.
+The concurrency control and replication system successfully keeps data consistent across three distributed nodes. READ_COMMITTED isolation level provides the right balance of speed and consistency for banking transactions. The master-slave design with date-based splitting lets the system handle many read requests while keeping all nodes synchronized. Test results show zero data differences and zero lost updates across 100 test runs, confirming the system works as designed.
 
 ---
 
